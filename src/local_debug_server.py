@@ -12,6 +12,8 @@ import sys
 import threading
 import time
 import uuid
+from urllib import error as urlerror
+from urllib import request as urlrequest
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -114,6 +116,67 @@ def update_env_file(path: Path, values: dict[str, str]) -> None:
         if key not in updated_keys:
             next_lines.append(f"{key}={quote_env_value(clean_values[key])}")
     path.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _normalize_llm_endpoint(base_url: str) -> str:
+    raw = norm_text(base_url).rstrip("/")
+    return raw
+
+
+def ping_remote_llm(*, base_url: str, api_key: str, model: str, timeout: int = 30) -> dict[str, Any]:
+    endpoint = _normalize_llm_endpoint(base_url)
+    if not endpoint:
+        raise ValueError("base_url is required")
+    if not api_key:
+        raise ValueError("api_key is required")
+    if not model:
+        raise ValueError("model is required")
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "Reply with exactly: hello world"},
+            {"role": "user", "content": "hello world"},
+        ],
+        "temperature": 0,
+        "max_tokens": 32,
+    }
+    req = urlrequest.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": "DailyPaperReader-LocalDebug/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(body or "{}")
+            return {
+                "ok": True,
+                "status": resp.status,
+                "endpoint": endpoint,
+                "data": data,
+            }
+    except urlerror.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return {
+            "ok": False,
+            "status": exc.code,
+            "endpoint": endpoint,
+            "error": body or str(exc),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": 0,
+            "endpoint": endpoint,
+            "error": repr(exc),
+        }
 
 
 class RunStore:
@@ -414,6 +477,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._save_local_config()
         if parsed.path == "/api/local/secret":
             return self._save_local_secret()
+        if parsed.path == "/api/local/llm/ping":
+            return self._ping_local_llm()
         if parsed.path != "/api/local/workflows/dispatch":
             return self._json({"ok": False, "error": "not found"}, status=404)
         try:
@@ -473,6 +538,19 @@ class Handler(SimpleHTTPRequestHandler):
             content = yaml.safe_dump(config, allow_unicode=True, sort_keys=False, width=10**9)
             CONFIG_PATH.write_text(content, encoding="utf-8")
             return self._json({"ok": True, "path": str(CONFIG_PATH), "savedAt": utc_now()})
+        except Exception as exc:
+            return self._json({"ok": False, "error": str(exc)}, status=400)
+
+    def _ping_local_llm(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+            payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            api_key = norm_text(payload.get("apiKey"))
+            base_url = norm_text(payload.get("baseUrl"))
+            model = norm_text(payload.get("model"))
+            result = ping_remote_llm(base_url=base_url, api_key=api_key, model=model)
+            status = 200 if result.get("ok") else 400
+            return self._json(result, status=status)
         except Exception as exc:
             return self._json({"ok": False, "error": str(exc)}, status=400)
 

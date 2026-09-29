@@ -932,6 +932,44 @@ window.SubscriptionsSmartQuery = (function () {
     };
   };
 
+  const buildFallbackCandidates = (description) => {
+    const text = normalizeText(description || '');
+    const parts = text
+      .split(/[\n,;，。；、]+/)
+      .map((item) => normalizeText(item).toLowerCase())
+      .filter(Boolean);
+    const seen = new Set();
+    const keywords = [];
+    parts.forEach((item) => {
+      if (!item || seen.has(item)) return;
+      seen.add(item);
+      keywords.push({
+        keyword: item,
+        keyword_cn: '',
+        query: item,
+        query_cn: '',
+      });
+    });
+    if (!keywords.length && text) {
+      keywords.push({
+        keyword: text.toLowerCase(),
+        keyword_cn: '',
+        query: text,
+        query_cn: '',
+      });
+    }
+    const intentQueries = text
+      ? [{
+        query: text,
+        query_cn: '',
+      }]
+      : [];
+    return normalizeGenerated({
+      keywords,
+      intent_queries: intentQueries,
+    });
+  };
+
   const buildPromptFromTemplate = (tag, desc, template) => {
     const retrievalContext =
       'For each item in keywords, use keyword (atomic recall token) and query (semantic rewrite). keyword is used for BM25 OR recall, query is used for embedding/ranker/LLM. '
@@ -956,33 +994,8 @@ window.SubscriptionsSmartQuery = (function () {
     const template = defaultPromptTemplate;
     const prompt = buildPromptFromTemplate(tag, desc, template);
     const buildEndpoints = () => {
-      const out = [];
-      const pushUnique = (u) => {
-        if (u && !out.includes(u)) out.push(u);
-      };
-      const expandEndpoint = (base) => {
-        const src = normalizeText(base).replace(/\/+$/, '');
-        if (!src) return;
-        if (src.includes('/chat/completions')) {
-          pushUnique(src);
-          pushUnique(src.replace(/\/chat\/completions$/, '/v1/chat/completions'));
-          return;
-        }
-        if (/\/v\d+$/i.test(src)) {
-          pushUnique(`${src}/chat/completions`);
-          pushUnique(`${src}/v1/chat/completions`);
-          return;
-        }
-        pushUnique(`${src}/v1/chat/completions`);
-        pushUnique(`${src}/chat/completions`);
-      };
-
       const raw = normalizeText(llm.baseUrl);
-      if (!raw) {
-        return out;
-      }
-      expandEndpoint(raw);
-      return out;
+      return raw ? [raw.replace(/\/+$/, '')] : [];
     };
     const endpoints = buildEndpoints();
     if (!endpoints.length) {
@@ -1110,9 +1123,14 @@ window.SubscriptionsSmartQuery = (function () {
     clearTimeout(timeout);
     if (!res) {
       if (fetchError) {
-        throw new Error(`模型服务请求失败：${fetchError}`);
+        console.warn(`模型服务请求失败，改用本地候选生成：${fetchError}`);
+        return buildFallbackCandidates(desc);
       }
-      throw new Error(errorText || '模型服务请求失败，请检查网络与密钥配置。');
+      if (errorText) {
+        console.warn(`模型服务请求失败，改用本地候选生成：${errorText}`);
+        return buildFallbackCandidates(desc);
+      }
+      throw new Error('模型服务请求失败，请检查网络与密钥配置。');
     }
     const data = await res.json();
     const content = extractLlmJsonText(data);

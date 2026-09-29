@@ -25,22 +25,13 @@
   const normalizeText = (value) => String(value || '').trim();
 
   const normalizeBaseUrlForStorage = (value) => {
-    let text = normalizeText(value).replace(/\/+$/g, '');
-    if (!text) return '';
-    text = text.replace(/\/chat\/completions$/i, '');
-    return text.replace(/\/+$/g, '');
+    return normalizeText(value).replace(/\/+$/g, '');
   };
 
   const buildChatCompletionsEndpoint = (value) => {
     const raw = normalizeText(value).replace(/\/+$/g, '');
     if (!raw) return '';
-    if (/\/chat\/completions$/i.test(raw)) return raw;
-    const normalized = normalizeBaseUrlForStorage(raw);
-    if (!normalized) return '';
-    if (/\/v\d+$/i.test(normalized)) {
-      return `${normalized}/chat/completions`;
-    }
-    return `${normalized}/v1/chat/completions`;
+    return raw;
   };
 
   const sanitizeModelList = (values, maxCount = 3) => {
